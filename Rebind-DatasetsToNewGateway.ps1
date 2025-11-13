@@ -8,6 +8,57 @@
     
     Use Case: When you have identical datasources on two gateways and want to
     switch datasets to use the new gateway's datasources instead.
+    
+    Supports partial migration with filters:
+    - Migrate only specific datasources by name
+    - Exclude specific datasources by name
+    - Limit number of datasources to migrate
+    - Limit number of datasets to migrate
+
+.PARAMETER OldGatewayId
+    The Gateway ID of the current gateway
+
+.PARAMETER NewGatewayId
+    The Gateway ID of the new gateway
+
+.PARAMETER MaxDatasourcesToMigrate
+    Maximum number of datasources to migrate. 0 = migrate all (default)
+
+.PARAMETER MaxDatasetsToMigrate
+    Maximum number of datasets to migrate. 0 = migrate all (default)
+
+.PARAMETER IncludeDatasourceNames
+    Array of datasource names to migrate. If specified, only these datasources will be processed.
+
+.PARAMETER ExcludeDatasourceNames
+    Array of datasource names to exclude from migration.
+
+.PARAMETER WhatIf
+    Preview changes without actually making them
+
+.EXAMPLE
+    # Migrate all datasources and datasets
+    .\Rebind-DatasetsToNewGateway.ps1 -OldGatewayId "old-id" -NewGatewayId "new-id" -TenantId "..." -ClientId "..." -ClientSecret $secret
+
+.EXAMPLE
+    # Migrate only first 100 datasources
+    .\Rebind-DatasetsToNewGateway.ps1 -OldGatewayId "old-id" -NewGatewayId "new-id" -MaxDatasourcesToMigrate 100 -TenantId "..." -ClientId "..." -ClientSecret $secret
+
+.EXAMPLE
+    # Migrate only first 50 datasets
+    .\Rebind-DatasetsToNewGateway.ps1 -OldGatewayId "old-id" -NewGatewayId "new-id" -MaxDatasetsToMigrate 50 -TenantId "..." -ClientId "..." -ClientSecret $secret
+
+.EXAMPLE
+    # Migrate only specific datasources
+    .\Rebind-DatasetsToNewGateway.ps1 -OldGatewayId "old-id" -NewGatewayId "new-id" -IncludeDatasourceNames @("SQL-Prod-Server1", "SQL-Prod-Server2") -TenantId "..." -ClientId "..." -ClientSecret $secret
+
+.EXAMPLE
+    # Migrate all except specific datasources
+    .\Rebind-DatasetsToNewGateway.ps1 -OldGatewayId "old-id" -NewGatewayId "new-id" -ExcludeDatasourceNames @("Dev-Server", "Test-Server") -TenantId "..." -ClientId "..." -ClientSecret $secret
+
+.EXAMPLE
+    # Preview changes (dry run)
+    .\Rebind-DatasetsToNewGateway.ps1 -OldGatewayId "old-id" -NewGatewayId "new-id" -MaxDatasourcesToMigrate 10 -WhatIf -TenantId "..." -ClientId "..." -ClientSecret $secret
 #>
 
 [CmdletBinding()]
@@ -26,6 +77,18 @@ param(
     
     [Parameter(Mandatory = $true)]
     [SecureString]$ClientSecret,
+    
+    [Parameter(Mandatory = $false)]
+    [int]$MaxDatasourcesToMigrate = 0,  # 0 = migrate all
+    
+    [Parameter(Mandatory = $false)]
+    [int]$MaxDatasetsToMigrate = 0,  # 0 = migrate all
+    
+    [Parameter(Mandatory = $false)]
+    [string[]]$IncludeDatasourceNames = @(),  # Migrate only specific datasources by name
+    
+    [Parameter(Mandatory = $false)]
+    [string[]]$ExcludeDatasourceNames = @(),  # Exclude specific datasources by name
     
     [Parameter(Mandatory = $false)]
     [switch]$WhatIf
@@ -204,9 +267,43 @@ Write-Log ""
 $datasourceMapping = @{}
 $matchedCount = 0
 $unmatchedCount = 0
+$skippedCount = 0
+$datasourcesProcessed = 0
 
-foreach ($oldDs in $oldDatasources) {
-    Write-Log "Checking: $($oldDs.datasourceName) ($($oldDs.datasourceType))"
+# Apply filtering
+$datasourcesToProcess = $oldDatasources
+
+# Include filter
+if ($IncludeDatasourceNames.Count -gt 0) {
+    Write-Log "Filtering to include only specific datasources: $($IncludeDatasourceNames -join ', ')" -Level Info
+    $datasourcesToProcess = $datasourcesToProcess | Where-Object { 
+        $IncludeDatasourceNames -contains $_.datasourceName 
+    }
+    Write-Log "Filtered to $($datasourcesToProcess.Count) datasources" -Level Info
+}
+
+# Exclude filter
+if ($ExcludeDatasourceNames.Count -gt 0) {
+    Write-Log "Excluding datasources: $($ExcludeDatasourceNames -join ', ')" -Level Info
+    $datasourcesToProcess = $datasourcesToProcess | Where-Object { 
+        $ExcludeDatasourceNames -notcontains $_.datasourceName 
+    }
+    Write-Log "After exclusions: $($datasourcesToProcess.Count) datasources" -Level Info
+}
+
+# Limit count
+if ($MaxDatasourcesToMigrate -gt 0 -and $datasourcesToProcess.Count -gt $MaxDatasourcesToMigrate) {
+    Write-Log "Limiting migration to first $MaxDatasourcesToMigrate datasources (out of $($datasourcesToProcess.Count))" -Level Warning
+    $datasourcesToProcess = $datasourcesToProcess | Select-Object -First $MaxDatasourcesToMigrate
+}
+
+Write-Log ""
+Write-Log "Will process $($datasourcesToProcess.Count) datasources" -Level Info
+Write-Log ""
+
+foreach ($oldDs in $datasourcesToProcess) {
+    $datasourcesProcessed++
+    Write-Log "[$datasourcesProcessed/$($datasourcesToProcess.Count)] Checking: $($oldDs.datasourceName) ($($oldDs.datasourceType))"
     
     $match = Find-MatchingDatasource -SourceDatasource $oldDs -TargetDatasources $newDatasources
     
@@ -239,6 +336,7 @@ Write-Log ""
 $totalRebound = 0
 $totalFailed = 0
 $totalSkipped = 0
+$datasetsProcessedCount = 0
 
 foreach ($oldDsId in $datasourceMapping.Keys) {
     $newDsId = $datasourceMapping[$oldDsId]
@@ -256,9 +354,26 @@ foreach ($oldDsId in $datasourceMapping.Keys) {
     
     Write-Log "  Found $($datasets.Count) dataset(s)"
     
-    foreach ($dataset in $datasets) {
+    # Apply dataset limit if specified
+    $datasetsToMigrate = $datasets
+    if ($MaxDatasetsToMigrate -gt 0) {
+        $remainingQuota = $MaxDatasetsToMigrate - $totalRebound
+        if ($remainingQuota -le 0) {
+            Write-Log "  Reached dataset migration limit ($MaxDatasetsToMigrate). Stopping." -Level Warning
+            break
+        }
+        
+        if ($datasets.Count -gt $remainingQuota) {
+            Write-Log "  Limiting to $remainingQuota dataset(s) due to quota" -Level Warning
+            $datasetsToMigrate = $datasets | Select-Object -First $remainingQuota
+        }
+    }
+    
+    foreach ($dataset in $datasetsToMigrate) {
+        $datasetsProcessedCount++
+        
         if ($WhatIf) {
-            Write-Log "  [WHATIF] Would rebind: $($dataset.DatasetName) in $($dataset.WorkspaceName)" -Level Warning
+            Write-Log "  [$datasetsProcessedCount] [WHATIF] Would rebind: $($dataset.DatasetName) in $($dataset.WorkspaceName)" -Level Warning
             $totalRebound++
         }
         else {
@@ -269,11 +384,11 @@ foreach ($oldDsId in $datasourceMapping.Keys) {
                     -DatasourceId $newDsId `
                     -Token $accessToken
                 
-                Write-Log "  ✓ Rebound: $($dataset.DatasetName)" -Level Success
+                Write-Log "  [$datasetsProcessedCount] ✓ Rebound: $($dataset.DatasetName)" -Level Success
                 $totalRebound++
             }
             catch {
-                Write-Log "  ✗ Failed: $($dataset.DatasetName) - $($_.Exception.Message)" -Level Error
+                Write-Log "  [$datasetsProcessedCount] ✗ Failed: $($dataset.DatasetName) - $($_.Exception.Message)" -Level Error
                 $totalFailed++
             }
         }
@@ -286,16 +401,30 @@ Write-Log "SUMMARY" -Level Info
 Write-Log "========================================" -Level Info
 Write-Log ""
 Write-Log "Datasources:" -Level Info
+Write-Log "  Total on old gateway: $($oldDatasources.Count)" -Level Info
+Write-Log "  Processed: $datasourcesProcessed" -Level Info
 Write-Log "  Matched: $matchedCount" -Level Info
 Write-Log "  Unmatched: $unmatchedCount" -Level Info
+if ($IncludeDatasourceNames.Count -gt 0 -or $ExcludeDatasourceNames.Count -gt 0) {
+    Write-Log "  Filtered/Excluded: $($oldDatasources.Count - $datasourcesProcessed)" -Level Info
+}
 Write-Log ""
 Write-Log "Datasets:" -Level Info
 Write-Log "  Rebound: $totalRebound" -Level Success
 Write-Log "  Failed: $totalFailed" -Level $(if ($totalFailed -gt 0) { 'Error' } else { 'Success' })
+if ($MaxDatasetsToMigrate -gt 0) {
+    Write-Log "  Limit applied: $MaxDatasetsToMigrate datasets max" -Level Info
+}
 Write-Log ""
 
 if (-not $WhatIf) {
     Write-Log "IMPORTANT: Test dataset refreshes to verify connectivity!" -Level Warning
+    
+    if ($MaxDatasourcesToMigrate -gt 0 -or $MaxDatasetsToMigrate -gt 0 -or $IncludeDatasourceNames.Count -gt 0) {
+        Write-Log ""
+        Write-Log "NOTE: This was a partial migration. Remaining datasources/datasets still use the old gateway." -Level Warning
+        Write-Log "Run the script again with different filters to migrate more." -Level Warning
+    }
 }
 
 #endregion
