@@ -1,31 +1,36 @@
 # README: Power BI Gateway Migration Script
 
 ## Overview
-This script automates the migration of Power BI datasets and data sources when an on-premises gateway cluster approaches the hard limit of 1,000 data sources.
+Automates load balancing and redistribution of Power BI data sources across gateway clusters when approaching the 1,000 data source limit. Split connections between multiple gateways to maintain capacity for growth.
 
 ## The Problem
 - Power BI on-premises and VNet gateways have a **hard limit of 1,000 data sources** per cluster
 - This limit is fixed regardless of data source type
-- Adding new gateway members does NOT increase this limit
-- When the limit is reached, you must create a new gateway cluster and migrate
+- Adding new gateway members to a cluster does NOT increase this limit
+- When approaching 1,000 connections, you **cannot add more** until you free up capacity
+- **Solution:** Create a new gateway cluster and redistribute/rebalance connections across both clusters
 
 ## The Solution
-This repository provides two approaches to handle the gateway migration:
+This repository provides automated tools to redistribute and load balance connections across multiple gateway clusters:
 
-### Approach 1: Full Migration (Create New Datasources)
-Automates:
-1. ✅ Monitoring data source count
-2. ✅ Creating a new gateway cluster when threshold is reached
-3. ✅ Cloning all data sources to the new gateway
-4. ✅ Rebinding datasets to the new gateway cluster
-5. ✅ Providing cleanup guidance
+### Approach 1: Automated Redistribution (Create New Cluster)
+Creates a new gateway cluster and automatically redistributes connections when threshold is reached:
+1. ✅ Monitors data source count on existing gateway
+2. ✅ Creates a new gateway cluster when threshold is reached (e.g., 900 out of 1,000)
+3. ✅ Moves a portion of data sources to the new gateway (not all)
+4. ✅ Both gateways now have capacity for growth
+5. ✅ Provides cleanup guidance
 
-### Approach 2: Dataset Rebinding (Use Existing Datasources)
-For scenarios where you already have datasources on both gateways:
-1. ✅ Finds matching datasources on both gateways
-2. ✅ Rebinds datasets to use new gateway's existing datasources
-3. ✅ No duplicate datasources created
-4. ✅ Faster migration with less cleanup
+**Use Case:** Automatic capacity management with threshold monitoring
+
+### Approach 2: Manual Load Balancing (Use Existing Gateways)
+For scenarios where you already have multiple gateways and need to redistribute workloads:
+1. ✅ Finds matching data sources on both gateways
+2. ✅ Moves specified data sources (by count, name, or filter)
+3. ✅ No duplicate data sources created
+4. ✅ Faster execution with granular control
+
+**Use Case:** Redistribute specific workloads, separate environments (Dev/Prod), or balance load manually
 
 ## Files
 
