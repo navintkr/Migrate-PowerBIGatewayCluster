@@ -35,20 +35,28 @@ For scenarios where you already have multiple gateways and need to redistribute 
 ## Files
 
 ### `Migrate-PowerBIGatewayCluster.ps1`
-**Full migration script** - Creates new gateway, clones datasources, and rebinds datasets.
-- Use when: Starting fresh with a new gateway cluster
-- Creates duplicate datasources on new gateway
-- Requires credential reconfiguration
+**Automated gateway creation and redistribution** - Creates new gateway cluster and redistributes connections automatically.
+- Use when: Monitoring capacity and need automatic redistribution at threshold
+- Creates gateway cluster automatically
+- Moves portion of connections to new gateway (configurable)
+- Requires credential reconfiguration for moved connections
 
 ### `Rebind-DatasetsToNewGateway.ps1`
-**Dataset rebinding script** - Switches datasets to existing datasources on new gateway.
-- Use when: Both gateways already have matching datasources
-- No datasource duplication
+**Manual load balancing and workload distribution** - Redistributes connections between existing gateways.
+- Use when: Both gateways already exist and configured
+- Granular control: move by count, name, or filter
+- No data source duplication
+- Credentials already configured on target gateway
 - Faster execution
-- Credentials already configured on new gateway
+
+**Common Scenarios:**
+- Split 1,000 connections → 500/500 across two gateways
+- Move HR/Finance workloads to dedicated gateway
+- Separate Dev/Test from Production environments
+- Rebalance after adding new gateway capacity
 
 ### `Example-GatewayMigration.ps1`
-Example configuration and usage guide for full migration approach.
+Example configuration and usage guide for automated redistribution approach.
 
 ### `Test-GatewayMigration-Local.ps1`
 Local testing script with mock data - test the migration logic without Azure resources.
@@ -84,9 +92,9 @@ Install-Module -Name DataGateway -Scope CurrentUser
 
 ## Usage
 
-### Option 1: Full Migration (New Gateway + Clone Data Sources)
+### Option 1: Automated Capacity Management (Create New Cluster + Redistribute)
 
-**Use when:** You're creating a brand new gateway cluster and need to clone everything.
+**Use when:** You want automated monitoring and redistribution when approaching the 1,000 limit.
 
 ```powershell
 .\Migrate-PowerBIGatewayCluster.ps1 `
@@ -100,63 +108,71 @@ Install-Module -Name DataGateway -Scope CurrentUser
     -ClientSecret (Read-Host -AsSecureString -Prompt "Client Secret")
 ```
 
-### Option 2: Dataset Rebinding (Use Existing Data Sources)
+**What it does:** 
+- Monitors Gateway 01 (if it hits 900+ connections)
+- Creates Gateway 02 automatically
+- Redistributes connections between both gateways
+- Both gateways now have capacity for growth
 
-**Use when:** Both gateways already have matching data sources and you just need to switch datasets over.
+### Option 2: Manual Load Balancing (Redistribute Between Existing Gateways)
 
-**Migrate Everything:**
+**Use when:** You already have multiple gateways and need to redistribute workloads strategically.
+
+**Example A: Balance Load - Split 500 Connections**
 ```powershell
 .\Rebind-DatasetsToNewGateway.ps1 `
-    -OldGatewayId "old-gateway-guid" `
-    -NewGatewayId "new-gateway-guid" `
+    -OldGatewayId "gateway-01-with-950-connections" `
+    -NewGatewayId "gateway-02-new-cluster" `
+    -MaxDatasourcesToMigrate 500 `
     -TenantId "YOUR-TENANT-ID" `
     -ClientId "YOUR-CLIENT-ID" `
     -ClientSecret (Read-Host -AsSecureString -Prompt "Client Secret")
 ```
+**Result:** Gateway 01 has 450 connections (550 slots free), Gateway 02 has 500 connections (500 slots free)
 
-**Partial Migration - First 100 Data Sources:**
+**Example B: Separate Workloads by Department**
+
+**Example B: Separate Workloads by Department**
 ```powershell
 .\Rebind-DatasetsToNewGateway.ps1 `
-    -OldGatewayId "old-gateway-guid" `
-    -NewGatewayId "new-gateway-guid" `
+    -OldGatewayId "gateway-shared" `
+    -NewGatewayId "gateway-hr-finance" `
+    -IncludeDatasourceNames @("HR-Server1", "HR-Server2", "Finance-DB1") `
+    -TenantId "YOUR-TENANT-ID" `
+    -ClientId "YOUR-CLIENT-ID" `
+    -ClientSecret (Read-Host -AsSecureString -Prompt "Client Secret")
+```
+**Result:** HR/Finance workloads on dedicated gateway, production stays on shared gateway
+
+**Example C: Move Everything Except Production**
+```powershell
+.\Rebind-DatasetsToNewGateway.ps1 `
+    -OldGatewayId "gateway-all" `
+    -NewGatewayId "gateway-nonprod" `
+    -ExcludeDatasourceNames @("Prod-DB1", "Prod-DB2", "Prod-Server1") `
+    -TenantId "YOUR-TENANT-ID" `
+    -ClientId "YOUR-CLIENT-ID" `
+    -ClientSecret (Read-Host -AsSecureString -Prompt "Client Secret")
+```
+**Result:** Production stays, dev/test/staging moves to new gateway
+
+**Example D: Gradual Redistribution (100 at a Time)**
+```powershell
+# Phase 1: Move first 100
+.\Rebind-DatasetsToNewGateway.ps1 `
+    -OldGatewayId "gateway-01" `
+    -NewGatewayId "gateway-02" `
     -MaxDatasourcesToMigrate 100 `
-    -TenantId "YOUR-TENANT-ID" `
-    -ClientId "YOUR-CLIENT-ID" `
-    -ClientSecret (Read-Host -AsSecureString -Prompt "Client Secret")
-```
+    -TenantId "..." -ClientId "..." -ClientSecret $secret
 
-**Partial Migration - First 50 Datasets:**
-```powershell
+# Phase 2: Move next 100 after validation
 .\Rebind-DatasetsToNewGateway.ps1 `
-    -OldGatewayId "old-gateway-guid" `
-    -NewGatewayId "new-gateway-guid" `
-    -MaxDatasetsToMigrate 50 `
-    -TenantId "YOUR-TENANT-ID" `
-    -ClientId "YOUR-CLIENT-ID" `
-    -ClientSecret (Read-Host -AsSecureString -Prompt "Client Secret")
+    -OldGatewayId "gateway-01" `
+    -NewGatewayId "gateway-02" `
+    -MaxDatasourcesToMigrate 100 `
+    -TenantId "..." -ClientId "..." -ClientSecret $secret
 ```
-
-**Migrate Specific Data Sources Only:**
-```powershell
-.\Rebind-DatasetsToNewGateway.ps1 `
-    -OldGatewayId "old-gateway-guid" `
-    -NewGatewayId "new-gateway-guid" `
-    -IncludeDatasourceNames @("SQL-Prod-Server1", "SQL-Prod-Server2") `
-    -TenantId "YOUR-TENANT-ID" `
-    -ClientId "YOUR-CLIENT-ID" `
-    -ClientSecret (Read-Host -AsSecureString -Prompt "Client Secret")
-```
-
-**Exclude Specific Data Sources:**
-```powershell
-.\Rebind-DatasetsToNewGateway.ps1 `
-    -OldGatewayId "old-gateway-guid" `
-    -NewGatewayId "new-gateway-guid" `
-    -ExcludeDatasourceNames @("Dev-Server", "Test-Server") `
-    -TenantId "YOUR-TENANT-ID" `
-    -ClientId "YOUR-CLIENT-ID" `
-    -ClientSecret (Read-Host -AsSecureString -Prompt "Client Secret")
-```
+**Result:** Gradual, low-risk redistribution with validation between phases
 
 **Benefits:**
 - ✅ No duplicate data sources created
@@ -257,17 +273,30 @@ Write-Host "Data sources: $($datasources.Count) / 1000"
 
 ## Important Notes
 
-### Two Migration Approaches
+### Typical Redistribution Scenarios
+
+**You are NOT moving all 1,000 connections.** You're redistributing them for capacity management:
+
+| Current State | Action | Result |
+|---------------|--------|--------|
+| Gateway 01: 950 connections | Move 400 to Gateway 02 | Gateway 01: 550 (450 free)<br>Gateway 02: 400 (600 free) |
+| Gateway 01: 1000 connections | Move 500 to Gateway 02 | Gateway 01: 500 (500 free)<br>Gateway 02: 500 (500 free) |
+| Gateway 01: 850 mixed workloads | Move HR/Finance to Gateway 02 | Gateway 01: Production only<br>Gateway 02: HR/Finance isolated |
+
+**Goal:** Both gateways have room for new connections and future growth.
+
+### Choose the Right Approach
 
 **Choose the right script for your scenario:**
 
 | Scenario | Use This Script | Why |
 |----------|----------------|-----|
-| Creating a brand new gateway cluster | `Migrate-PowerBIGatewayCluster.ps1` | Clones everything from scratch |
-| Both gateways already configured | `Rebind-DatasetsToNewGateway.ps1` | Faster, no duplication |
+| Need automated capacity monitoring | `Migrate-PowerBIGatewayCluster.ps1` | Monitors and acts at threshold |
+| Both gateways already configured | `Rebind-DatasetsToNewGateway.ps1` | Faster, granular control |
 | Need to test locally first | `Test-GatewayMigration-Local.ps1` | Safe testing with mock data |
-| **Migrate in phases (100-200 at a time)** | `Rebind-DatasetsToNewGateway.ps1` | **Supports partial migration** |
-| Have 1000 connections, want to move gradually | `Rebind-DatasetsToNewGateway.ps1` | **Use filters or limits** |
+| **Redistribute 500 out of 1000 connections** | `Rebind-DatasetsToNewGateway.ps1` | **Use MaxDatasourcesToMigrate** |
+| **Separate HR/Finance workloads** | `Rebind-DatasetsToNewGateway.ps1` | **Use IncludeDatasourceNames filter** |
+| **Move everything except Production** | `Rebind-DatasetsToNewGateway.ps1` | **Use ExcludeDatasourceNames filter** |
 
 ### Credentials
 ⚠️ **Data source credentials cannot be automatically migrated** due to security restrictions. 
@@ -300,15 +329,18 @@ This is why we offer two approaches:
 
 ## Phased Migration Strategy
 
-### Why Migrate in Phases?
+### Why Redistribute in Phases?
 
-When you have many connections (e.g., 1,000 data sources), migrating everything at once can be risky. A phased approach allows you to:
-- ✅ Test and validate small batches
+When you have many connections approaching the 1,000 limit, redistributing in batches allows you to:
+- ✅ Test and validate small batches before continuing
 - ✅ Minimize disruption to business operations
 - ✅ Roll back easily if issues occur
 - ✅ Monitor performance incrementally
+- ✅ **NOT moving all 1,000** - just redistributing for capacity
 
-### Recommended Phased Approach
+### Recommended Phased Approach for Load Balancing
+
+**Scenario:** Gateway 01 has 950 connections, approaching limit
 
 **Phase 1: Test with Low-Impact Data Sources (10-20)**
 ```powershell
@@ -319,43 +351,41 @@ When you have many connections (e.g., 1,000 data sources), migrating everything 
     -WhatIf  # Dry run first
 ```
 
-**Phase 2: Migrate First Batch (100-200)**
+**Phase 2: Redistribute First Batch (100-200)**
 ```powershell
 .\Rebind-DatasetsToNewGateway.ps1 `
     -OldGatewayId "old-id" `
     -NewGatewayId "new-id" `
-    -MaxDatasourcesToMigrate 100 `
+    -MaxDatasourcesToMigrate 200 `
     -TenantId "..." -ClientId "..." -ClientSecret $secret
 ```
+**Result:** Gateway 01 now has 750 connections (250 slots free), Gateway 02 has 200 (800 slots free)
 
 **Phase 3: Monitor for 24-48 Hours**
 - Check dataset refresh success rates
 - Monitor gateway performance
 - Review error logs
+- **Both gateways now have capacity for new connections**
 
-**Phase 4: Continue with Next Batch**
+**Phase 4: Continue with Next Batch if Needed**
 ```powershell
-# Exclude already migrated datasources
+# Move another 200 if more capacity needed
 .\Rebind-DatasetsToNewGateway.ps1 `
     -OldGatewayId "old-id" `
     -NewGatewayId "new-id" `
     -MaxDatasourcesToMigrate 200 `
-    -ExcludeDatasourceNames @("Already-Migrated-DS1", "Already-Migrated-DS2") `
     -TenantId "..." -ClientId "..." -ClientSecret $secret
 ```
+**Result:** Gateway 01: 550 connections (450 free), Gateway 02: 400 connections (600 free)
 
-**Phase 5: Final Batch**
-```powershell
-# Migrate remaining datasources
-.\Rebind-DatasetsToNewGateway.ps1 `
-    -OldGatewayId "old-id" `
-    -NewGatewayId "new-id" `
-    -TenantId "..." -ClientId "..." -ClientSecret $secret
-```
+**Phase 5: Both Gateways Balanced**
+- Stop when both gateways have adequate capacity for growth
+- You do NOT need to move all connections
+- Goal is capacity management, not full migration
 
-### Tracking Your Migration Progress
+### Tracking Your Redistribution Progress
 
-Keep a log of migrated data sources:
+Keep a log of redistributed data sources:
 ```powershell
 # Run with WhatIf to get a list first
 .\Rebind-DatasetsToNewGateway.ps1 -WhatIf ... | Tee-Object -FilePath "migration-log.txt"
@@ -384,29 +414,31 @@ Register-ScheduledTask -TaskName "PowerBI-Gateway-Monitor" -Action $action -Trig
 
 ### Does it move all connections or can I specify how many?
 
-**Answer:** By default, both scripts migrate ALL matching connections. However, the `Rebind-DatasetsToNewGateway.ps1` script now supports:
+**Answer:** By default, the scripts can redistribute ALL matching connections, but the `Rebind-DatasetsToNewGateway.ps1` script provides granular control:
 
-- ✅ **Limit by count**: Migrate only first N data sources or datasets
-- ✅ **Include specific**: Migrate only named data sources
+**Key Point:** You are **NOT moving all 1,000 connections**. You're redistributing some to free up capacity.
+
+- ✅ **Limit by count**: Move only first N data sources or datasets
+- ✅ **Include specific**: Move only named data sources  
 - ✅ **Exclude specific**: Skip certain data sources
-- ✅ **Phased migration**: Gradually move connections in batches
+- ✅ **Phased redistribution**: Gradually rebalance in batches
 
 **Examples:**
 ```powershell
-# Move only 100 datasources
--MaxDatasourcesToMigrate 100
+# Redistribute 500 out of 950 connections
+-MaxDatasourcesToMigrate 500
 
 # Move only 50 datasets
 -MaxDatasetsToMigrate 50
 
-# Move specific datasources only
--IncludeDatasourceNames @("Server1", "Server2")
+# Move specific datasources only (HR/Finance workload)
+-IncludeDatasourceNames @("HR-Server1", "Finance-DB1")
 
-# Skip certain datasources
--ExcludeDatasourceNames @("Dev", "Test")
+# Skip production datasources (move dev/test)
+-ExcludeDatasourceNames @("Prod-DB1", "Prod-Server1")
 ```
 
-For 1,000 connections, we recommend migrating 100-200 at a time, testing each batch before continuing.
+**Recommended for 1,000 connections:** Redistribute 400-500 to new gateway, keeping 500-600 on original. Both now have capacity for growth.
 
 ### "Gateway cluster not found"
 - Verify gateway name spelling
@@ -436,15 +468,16 @@ For 1,000 connections, we recommend migrating 100-200 at a time, testing each ba
 ### Which Script Should I Use?
 
 **Use `Migrate-PowerBIGatewayCluster.ps1` if:**
-- You're creating a new gateway from scratch
-- You want automated gateway cluster creation
-- You want monitoring based on threshold
+- You want automated capacity monitoring and redistribution
+- You want to create a new gateway automatically at threshold
+- You want automated workload balancing
 
 **Use `Rebind-DatasetsToNewGateway.ps1` if:**
 - Both gateways already exist and are configured
 - Data sources already exist on both gateways
+- You want granular control over what moves (by count, name, or filter)
+- You want to redistribute specific workloads (HR, Finance, Dev/Test)
 - You want to avoid duplicate data sources
-- You just need to switch datasets over
 
 ## Limitations
 
@@ -464,6 +497,6 @@ For 1,000 connections, we recommend migrating 100-200 at a time, testing each ba
 MIT License - Feel free to modify and distribute
 
 ## Version History
-- v1.2 (2025-11-13): Added partial/phased migration support with filters and limits
-- v1.1 (2025-11-13): Added dataset rebinding script for existing data sources
-- v1.0 (2025-11-13): Initial release with full automation
+- v1.2 (2025-11-13): Added partial/phased redistribution support with filters and limits
+- v1.1 (2025-11-13): Added dataset rebinding script for load balancing across gateways
+- v1.0 (2025-11-13): Initial release with automated capacity management
