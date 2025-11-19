@@ -6,13 +6,17 @@ import time
 # -------------------------------------------------------
 # CONFIG - Update these values or pass as command line args
 # -------------------------------------------------------
-tenant_id     = "YOUR-TENANT-ID-HERE"  # Azure AD Tenant ID
-use_device_code = True  # Set to True to use interactive login (recommended for gateway admins)
-old_gateway   = "OLD-GATEWAY-ID-HERE"  # Source gateway cluster ID
-new_gateway   = "NEW-GATEWAY-ID-HERE"  # Target gateway cluster ID
+tenant_id     = "YOUR-TENANT-ID"
+use_device_code = True  # Set to False to use service principal authentication
+old_gateway   = "YOUR-OLD-GATEWAY-ID"
+new_gateway   = "YOUR-NEW-GATEWAY-ID"
 datasource_name_filter = ""  # Filter by datasource name (leave empty to migrate all)
 workspace_ids = []  # Leave empty to scan all accessible workspaces, or specify workspace IDs
 what_if       = True  # Set to False to actually perform the migration
+
+# Service Principal credentials (only used when use_device_code = False)
+sp_client_id = "YOUR-SERVICE-PRINCIPAL-CLIENT-ID"
+sp_client_secret = "YOUR-SERVICE-PRINCIPAL-SECRET"
 
 # Power BI public client ID (official Microsoft Power BI app)
 client_id = "ea0616ba-638b-4df5-95b9-636659ae5121"
@@ -91,9 +95,28 @@ if use_device_code:
             print(f"✗ Unexpected error: {token_resp.text}")
             sys.exit(1)
 else:
-    print("Note: Service principal authentication is not configured.")
-    print("Please set use_device_code = True to use interactive login.")
-    sys.exit(1)
+    # Service Principal authentication (client credentials flow)
+    print("Using service principal authentication (Client Credentials)...")
+    print(f"Client ID: {sp_client_id}\n")
+    
+    token_url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
+    token_data = {
+        "client_id": sp_client_id,
+        "client_secret": sp_client_secret,
+        "scope": scope,
+        "grant_type": "client_credentials"
+    }
+    
+    token_resp = requests.post(token_url, data=token_data)
+    
+    if token_resp.status_code == 200:
+        access_token = token_resp.json()["access_token"]
+        print("✓ Service principal authentication successful!\n")
+    else:
+        print(f"✗ Authentication failed: {token_resp.text}")
+        print("\nNote: Ensure the service principal has proper permissions.")
+        print("Consider using device code flow (set use_device_code = True)")
+        sys.exit(1)
 
 headers = {
     "Authorization": f"Bearer {access_token}",
@@ -265,12 +288,12 @@ for workspace in workspaces:
             
             try:
                 # Get datasources for this dataset (non-admin API)
-                ds_sources = pbi_get(f"/groups/{workspace_id}/datasets/{dataset_id}/datasources")["value"]
-                
-                # Debug: Show what gateway each dataset is using
-                for ds in ds_sources:
-                    if ds.get("gatewayId") == old_gateway:
-                        print(f"    Dataset '{dataset_name}' uses old gateway, datasource: {ds.get('datasourceId')}")
+                try:
+                    ds_response = pbi_get(f"/groups/{workspace_id}/datasets/{dataset_id}/datasources")
+                    ds_sources = ds_response.get("value", [])
+                except Exception as ds_error:
+                    # Skip datasets we can't access
+                    continue
                 
                 # Check if any datasource is from our old gateway
                 old_sources = [s for s in ds_sources if s.get("gatewayId") == old_gateway and s.get("datasourceId") in datasource_mapping]
@@ -361,6 +384,14 @@ for dataset_id, info in datasets_to_migrate.items():
         
         # Try multiple methods to rebind the dataset
         try:
+            # First, try to take over the dataset if service principal doesn't own it
+            try:
+                print(f"  Taking over dataset ownership...")
+                pbi_post_no_response(f"/groups/{workspace_id}/datasets/{dataset_id}/Default.TakeOver", {})
+                print(f"  ✓ Dataset ownership acquired")
+            except Exception as takeover_err:
+                print(f"  ⚠ Could not take over dataset: {takeover_err}")
+            
             print(f"  Attempting to rebind dataset to new gateway...")
             
             # Method 1: Use official BindToGateway API
