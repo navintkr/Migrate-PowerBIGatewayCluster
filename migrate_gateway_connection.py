@@ -7,116 +7,47 @@ import time
 # CONFIG - Update these values or pass as command line args
 # -------------------------------------------------------
 tenant_id     = "YOUR-TENANT-ID"
-use_device_code = True  # Set to False to use service principal authentication
 old_gateway   = "YOUR-OLD-GATEWAY-ID"
 new_gateway   = "YOUR-NEW-GATEWAY-ID"
 datasource_name_filter = ""  # Filter by datasource name (leave empty to migrate all)
 workspace_ids = []  # Leave empty to scan all accessible workspaces, or specify workspace IDs
 what_if       = True  # Set to False to actually perform the migration
 
-# Service Principal credentials (only used when use_device_code = False)
+# Service Principal credentials
 sp_client_id = "YOUR-SERVICE-PRINCIPAL-CLIENT-ID"
 sp_client_secret = "YOUR-SERVICE-PRINCIPAL-SECRET"
 
-# Power BI public client ID (official Microsoft Power BI app)
-client_id = "ea0616ba-638b-4df5-95b9-636659ae5121"
 scope = "https://analysis.windows.net/powerbi/api/.default"
 base_url = "https://api.powerbi.com/v1.0/myorg"
 
 # -------------------------------------------------------
-# AUTH – Device Code Flow (Interactive Login)
+# AUTH – Service Principal Authentication
 # -------------------------------------------------------
 print("="*60)
 print("AUTHENTICATION")
 print("="*60)
 
-if use_device_code:
-    print("Using interactive device code authentication...")
-    print("You will authenticate with your own user credentials.\n")
-    
-    # Request device code
-    device_code_url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/devicecode"
-    device_code_data = {
-        "client_id": client_id,
-        "scope": scope
-    }
-    
-    device_resp = requests.post(device_code_url, data=device_code_data)
-    device_resp.raise_for_status()
-    device_info = device_resp.json()
-    
-    print("="*60)
-    print(f"USER ACTION REQUIRED:")
-    print(f"1. Go to: {device_info['verification_uri']}")
-    print(f"2. Enter code: {device_info['user_code']}")
-    print("="*60)
-    print("Waiting for authentication...")
-    
-    # Poll for token
-    token_url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
-    token_data = {
-        "client_id": client_id,
-        "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-        "device_code": device_info['device_code']
-    }
-    
-    # Poll until user completes authentication
-    interval = device_info.get('interval', 5)
-    expires_in = device_info.get('expires_in', 900)
-    start_time = time.time()
-    
-    while True:
-        if time.time() - start_time > expires_in:
-            print("✗ Authentication timeout. Please try again.")
-            sys.exit(1)
-        
-        time.sleep(interval)
-        token_resp = requests.post(token_url, data=token_data)
-        
-        if token_resp.status_code == 200:
-            access_token = token_resp.json()["access_token"]
-            print("✓ Authentication successful!\n")
-            break
-        elif token_resp.status_code == 400:
-            error = token_resp.json().get('error')
-            if error == 'authorization_pending':
-                # Still waiting for user
-                continue
-            elif error == 'authorization_declined':
-                print("✗ Authentication was declined by user.")
-                sys.exit(1)
-            elif error == 'expired_token':
-                print("✗ Device code expired. Please try again.")
-                sys.exit(1)
-            else:
-                print(f"✗ Authentication error: {error}")
-                sys.exit(1)
-        else:
-            print(f"✗ Unexpected error: {token_resp.text}")
-            sys.exit(1)
+# Service Principal authentication (client credentials flow)
+print("Using service principal authentication (Client Credentials)...")
+print(f"Client ID: {sp_client_id}\n")
+
+token_url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
+token_data = {
+    "client_id": sp_client_id,
+    "client_secret": sp_client_secret,
+    "scope": scope,
+    "grant_type": "client_credentials"
+}
+
+token_resp = requests.post(token_url, data=token_data)
+
+if token_resp.status_code == 200:
+    access_token = token_resp.json()["access_token"]
+    print("✓ Service principal authentication successful!\n")
 else:
-    # Service Principal authentication (client credentials flow)
-    print("Using service principal authentication (Client Credentials)...")
-    print(f"Client ID: {sp_client_id}\n")
-    
-    token_url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
-    token_data = {
-        "client_id": sp_client_id,
-        "client_secret": sp_client_secret,
-        "scope": scope,
-        "grant_type": "client_credentials"
-    }
-    
-    token_resp = requests.post(token_url, data=token_data)
-    
-    if token_resp.status_code == 200:
-        access_token = token_resp.json()["access_token"]
-        print("✓ Service principal authentication successful!\n")
-    else:
-        print(f"✗ Authentication failed: {token_resp.text}")
-        print("\nNote: Ensure the service principal has proper permissions.")
-        print("Consider using device code flow (set use_device_code = True)")
-        sys.exit(1)
+    print(f"✗ Authentication failed: {token_resp.text}")
+    print("\nNote: Ensure the service principal has proper permissions.")
+    sys.exit(1)
 
 headers = {
     "Authorization": f"Bearer {access_token}",
